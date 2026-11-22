@@ -1,5 +1,6 @@
 import 'dart:ui' show FontFeature;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -9,12 +10,11 @@ import '../models/saving_goal_model.dart';
 import '../models/transaction_model.dart';
 import '../services/export_backup_service.dart';
 import '../services/hive_service.dart';
+import '../services/notification_service.dart';
 import '../theme/app_theme.dart';
 
 /// ============================================================================
 /// DESIGN TOKENS — palet NoUploadPDF
-/// Paper hangat (#F7F6F3 / #111113), permukaan datar (#FFFFFF / #1A1A1E),
-/// border hairline 1px, satu hijau privacy (#007D50 / #5FD49E).
 /// ============================================================================
 class _Ui {
   final bool dark;
@@ -24,17 +24,10 @@ class _Ui {
       dark ? const Color(0xFF111113) : const Color(0xFFF7F6F3);
   Color get sheet =>
       dark ? const Color(0xFF1A1A1E) : const Color(0xFFFFFFFF);
-  Color get tint =>
-      dark ? const Color(0xFF161619) : const Color(0xFFFBFAF8);
-  Color get chip =>
-      dark ? const Color(0xFF2A2A30) : const Color(0xFFF1EFEA);
-
-  Color get border =>
-      dark ? const Color(0xFF2A2A30) : const Color(0xFFE4E2DC);
-  Color get borderStrong =>
-      dark ? const Color(0xFF3B3B42) : const Color(0xFFD6D3CB);
   Color get divider =>
       dark ? const Color(0xFF24242A) : const Color(0xFFEEECE7);
+  Color get border =>
+      dark ? const Color(0xFF2A2A30) : const Color(0xFFE4E2DC);
 
   Color get ink =>
       dark ? const Color(0xFFEDEDEA) : const Color(0xFF17171A);
@@ -61,11 +54,27 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  bool _isDark = SettingsController.isDark;
+  bool _isDark = false;
   bool _useSystemTheme = false;
-  bool _reminderEnabled = SettingsController.reminderEnabled;
-  String _reminderTime = SettingsController.reminderTime;
+  bool _reminderEnabled = false;
+  String _reminderTime = '20:00';
   bool _isProcessing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadInitialSettings();
+  }
+
+  void _loadInitialSettings() {
+    try {
+      _isDark = SettingsController.isDark;
+      _reminderEnabled = SettingsController.reminderEnabled;
+      _reminderTime = SettingsController.reminderTime;
+    } catch (e) {
+      debugPrint('Settings load fallback: $e');
+    }
+  }
 
   _ThemeOption get _selectedTheme {
     if (_useSystemTheme) return _ThemeOption.system;
@@ -78,6 +87,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           WidgetsBinding.instance.platformDispatcher.platformBrightness ==
               Brightness.dark;
       await SettingsController.toggleDarkMode(platformDark);
+      if (!mounted) return;
       setState(() {
         _useSystemTheme = true;
         _isDark = platformDark;
@@ -87,10 +97,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     final dark = option == _ThemeOption.dark;
     await SettingsController.toggleDarkMode(dark);
+    if (!mounted) return;
     setState(() {
       _useSystemTheme = false;
       _isDark = dark;
     });
+  }
+
+  Future<void> _syncNotificationSchedule({
+    required bool enabled,
+    required String time,
+  }) async {
+    if (kIsWeb) return;
+    try {
+      if (enabled) {
+        final parts = time.split(':');
+        final hour = int.tryParse(parts[0]) ?? 20;
+        final minute = int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0;
+        await NotificationService.scheduleDailyReminder(
+          hour: hour,
+          minute: minute,
+        );
+      } else {
+        await NotificationService.cancelDailyReminder();
+      }
+    } catch (e) {
+      debugPrint('Notification schedule error: $e');
+    }
   }
 
   void _showSnack(String message, {bool isError = false}) {
@@ -135,6 +168,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         enabled: true,
         time: formatted,
       );
+      await _syncNotificationSchedule(enabled: true, time: formatted);
+
+      if (!mounted) return;
       setState(() {
         _reminderEnabled = true;
         _reminderTime = formatted;
@@ -238,6 +274,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final bool currentDark = Theme.of(context).brightness == Brightness.dark;
+    if (_isDark != currentDark) {
+      _isDark = currentDark;
+    }
     final ui = _Ui(_isDark);
 
     return Scaffold(
@@ -247,442 +287,430 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: ValueListenableBuilder<Box<TransactionModel>>(
           valueListenable: HiveService.box.listenable(),
           builder: (context, txBox, _) {
-            return ValueListenableBuilder<Box<SavingGoalModel>>(
-              valueListenable: HiveService.goalsBox.listenable(),
-              builder: (context, goalBox, _) {
-                final txCount = txBox.length;
-                final goalCount = goalBox.length;
+            final txCount = txBox.length;
+            final goalCount = HiveService.goalsBox.isOpen
+                ? HiveService.goalsBox.length
+                : 0;
 
-                return ListView(
-                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 110),
+            return ListView(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 110),
+              children: [
+                // HEADER
+                Row(
                   children: [
-                    // HEADER (gaya bersih seperti referensi)
-                    Row(
-                      children: [
-                        if (Navigator.canPop(context)) ...[
-                          Material(
-                            color: ui.sheet,
-                            borderRadius: BorderRadius.circular(10),
-                            child: InkWell(
+                    if (Navigator.canPop(context)) ...[
+                      Material(
+                        color: ui.sheet,
+                        borderRadius: BorderRadius.circular(10),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(10),
+                          onTap: () => Navigator.of(context).pop(),
+                          child: Container(
+                            width: 38,
+                            height: 38,
+                            decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(10),
-                              onTap: () => Navigator.of(context).pop(),
-                              child: Container(
-                                width: 38,
-                                height: 38,
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(10),
-                                  border:
-                                      Border.all(color: ui.border, width: 1),
-                                ),
-                                child: Icon(
-                                  Icons.arrow_back_ios_new_rounded,
-                                  size: 15,
-                                  color: ui.ink,
-                                ),
-                              ),
+                              border: Border.all(color: ui.border, width: 1),
                             ),
-                          ),
-                          const SizedBox(width: 12),
-                        ],
-                        Expanded(
-                          child: Text(
-                            'Pengaturan',
-                            style: GoogleFonts.instrumentSans(
-                              fontSize: 28,
-                              fontWeight: FontWeight.w600,
+                            child: Icon(
+                              Icons.arrow_back_ios_new_rounded,
+                              size: 15,
                               color: ui.ink,
-                              letterSpacing: -0.7,
                             ),
                           ),
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
-
-                    // SECTION 1: TAMPILAN (3 kartu preview System / Light / Dark)
-                    Text(
-                      'Tampilan',
-                      style: GoogleFonts.instrumentSans(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: ui.ink,
-                        letterSpacing: -0.3,
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: ui.sheet,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: ui.border, width: 1),
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: _AppearanceOptionCard(
-                              label: 'Sistem',
-                              mode: _ThemeOption.system,
-                              selected: _selectedTheme == _ThemeOption.system,
-                              ui: ui,
-                              onTap: () => _selectTheme(_ThemeOption.system),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _AppearanceOptionCard(
-                              label: 'Terang',
-                              mode: _ThemeOption.light,
-                              selected: _selectedTheme == _ThemeOption.light,
-                              ui: ui,
-                              onTap: () => _selectTheme(_ThemeOption.light),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _AppearanceOptionCard(
-                              label: 'Gelap',
-                              mode: _ThemeOption.dark,
-                              selected: _selectedTheme == _ThemeOption.dark,
-                              ui: ui,
-                              onTap: () => _selectTheme(_ThemeOption.dark),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 26),
-
-                    // SECTION 2: PENGINGAT & KEBIASAAN (gaya grouped rows seperti Capture)
-                    Text(
-                      'Pengingat',
-                      style: GoogleFonts.instrumentSans(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: ui.ink,
-                        letterSpacing: -0.3,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: ui.sheet,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: ui.border, width: 1),
-                      ),
-                      child: Column(
-                        children: [
-                          // Baris 1: Toggle Pengingat Harian
-                          Padding(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 10),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  Icons.notifications_none_rounded,
-                                  size: 20,
-                                  color: ui.ink,
-                                ),
-                                const SizedBox(width: 14),
-                                Expanded(
-                                  child: Text(
-                                    'Pengingat menabung',
-                                    style: GoogleFonts.instrumentSans(
-                                      fontSize: 14.5,
-                                      fontWeight: FontWeight.w500,
-                                      color: ui.ink,
-                                    ),
-                                  ),
-                                ),
-                                Switch.adaptive(
-                                  value: _reminderEnabled,
-                                  activeThumbColor: Colors.white,
-                                  activeTrackColor: ui.gain,
-                                  onChanged: (val) async {
-                                    await SettingsController.saveReminder(
-                                      enabled: val,
-                                      time: _reminderTime,
-                                    );
-                                    setState(() => _reminderEnabled = val);
-                                    if (val) {
-                                      _showSnack(
-                                          'Pengingat menabung aktif pukul $_reminderTime');
-                                    }
-                                  },
-                                ),
-                              ],
-                            ),
-                          ),
-                          Divider(height: 1, thickness: 1, color: ui.divider),
-
-                          // Baris 2: Jam Pengingat (trailing value + chevron seperti "Quick >")
-                          InkWell(
-                            borderRadius: const BorderRadius.vertical(
-                              bottom: Radius.circular(16),
-                            ),
-                            onTap: _pickReminderTime,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 15),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    Icons.schedule_rounded,
-                                    size: 20,
-                                    color: ui.ink,
-                                  ),
-                                  const SizedBox(width: 14),
-                                  Expanded(
-                                    child: Text(
-                                      'Waktu pengingat',
-                                      style: GoogleFonts.instrumentSans(
-                                        fontSize: 14.5,
-                                        fontWeight: FontWeight.w500,
-                                        color: ui.ink,
-                                      ),
-                                    ),
-                                  ),
-                                  Text(
-                                    _reminderEnabled
-                                        ? _reminderTime
-                                        : 'Nonaktif',
-                                    style: GoogleFonts.jetBrainsMono(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w500,
-                                      color: _reminderEnabled
-                                          ? ui.gain
-                                          : ui.muted,
-                                      fontFeatures: const [
-                                        FontFeature.tabularFigures()
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Icon(
-                                    Icons.chevron_right_rounded,
-                                    size: 18,
-                                    color: ui.muted,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 26),
-
-                    // SECTION 3: DATA & LAPORAN (gaya grouped rows seperti App settings)
-                    Text(
-                      'Data & Laporan',
-                      style: GoogleFonts.instrumentSans(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: ui.ink,
-                        letterSpacing: -0.3,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: ui.sheet,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: ui.border, width: 1),
-                      ),
-                      child: Column(
-                        children: [
-                          // Row 1: Status Penyimpanan Lokal (Privacy Green badge)
-                          Padding(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 15),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  Icons.shield_outlined,
-                                  size: 20,
-                                  color: ui.gain,
-                                ),
-                                const SizedBox(width: 14),
-                                Expanded(
-                                  child: Text(
-                                    'Penyimpanan lokal',
-                                    style: GoogleFonts.instrumentSans(
-                                      fontSize: 14.5,
-                                      fontWeight: FontWeight.w500,
-                                      color: ui.ink,
-                                    ),
-                                  ),
-                                ),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 8, vertical: 3),
-                                  decoration: BoxDecoration(
-                                    color: ui.gainTint,
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  child: Text(
-                                    '$txCount tx • $goalCount target',
-                                    style: GoogleFonts.jetBrainsMono(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w600,
-                                      color: ui.gain,
-                                      fontFeatures: const [
-                                        FontFeature.tabularFigures()
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Divider(height: 1, thickness: 1, color: ui.divider),
-
-                          // Row 2: Export Laporan PDF
-                          InkWell(
-                            onTap: _isProcessing ? null : _handleExportPdf,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 15),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    Icons.picture_as_pdf_outlined,
-                                    size: 20,
-                                    color: ui.ink,
-                                  ),
-                                  const SizedBox(width: 14),
-                                  Expanded(
-                                    child: Text(
-                                      'Export laporan PDF',
-                                      style: GoogleFonts.instrumentSans(
-                                        fontSize: 14.5,
-                                        fontWeight: FontWeight.w500,
-                                        color: ui.ink,
-                                      ),
-                                    ),
-                                  ),
-                                  Text(
-                                    'PDF',
-                                    style: GoogleFonts.jetBrainsMono(
-                                      fontSize: 12.5,
-                                      color: ui.muted,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Icon(
-                                    Icons.chevron_right_rounded,
-                                    size: 18,
-                                    color: ui.muted,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          Divider(height: 1, thickness: 1, color: ui.divider),
-
-                          // Row 3: Backup Data (.json)
-                          InkWell(
-                            onTap: _isProcessing ? null : _handleBackup,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 15),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    Icons.cloud_upload_outlined,
-                                    size: 20,
-                                    color: ui.ink,
-                                  ),
-                                  const SizedBox(width: 14),
-                                  Expanded(
-                                    child: Text(
-                                      'Backup data',
-                                      style: GoogleFonts.instrumentSans(
-                                        fontSize: 14.5,
-                                        fontWeight: FontWeight.w500,
-                                        color: ui.ink,
-                                      ),
-                                    ),
-                                  ),
-                                  Text(
-                                    '.json',
-                                    style: GoogleFonts.jetBrainsMono(
-                                      fontSize: 12.5,
-                                      color: ui.muted,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Icon(
-                                    Icons.chevron_right_rounded,
-                                    size: 18,
-                                    color: ui.muted,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          Divider(height: 1, thickness: 1, color: ui.divider),
-
-                          // Row 4: Restore Data
-                          InkWell(
-                            borderRadius: const BorderRadius.vertical(
-                              bottom: Radius.circular(16),
-                            ),
-                            onTap: _isProcessing ? null : _handleRestore,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 15),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    Icons.restore_rounded,
-                                    size: 20,
-                                    color: ui.ink,
-                                  ),
-                                  const SizedBox(width: 14),
-                                  Expanded(
-                                    child: Text(
-                                      'Pulihkan data',
-                                      style: GoogleFonts.instrumentSans(
-                                        fontSize: 14.5,
-                                        fontWeight: FontWeight.w500,
-                                        color: ui.ink,
-                                      ),
-                                    ),
-                                  ),
-                                  Text(
-                                    'Import',
-                                    style: GoogleFonts.jetBrainsMono(
-                                      fontSize: 12.5,
-                                      color: ui.muted,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Icon(
-                                    Icons.chevron_right_rounded,
-                                    size: 18,
-                                    color: ui.muted,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Center(
+                      const SizedBox(width: 12),
+                    ],
+                    Expanded(
                       child: Text(
-                        'Semua data diproses secara lokal di perangkat ini.',
+                        'Pengaturan',
                         style: GoogleFonts.instrumentSans(
-                          fontSize: 12,
-                          color: ui.subtle,
+                          fontSize: 28,
+                          fontWeight: FontWeight.w600,
+                          color: ui.ink,
+                          letterSpacing: -0.7,
                         ),
                       ),
                     ),
                   ],
-                );
-              },
+                ),
+                const SizedBox(height: 24),
+
+                // SECTION 1: TAMPILAN
+                Text(
+                  'Tampilan',
+                  style: GoogleFonts.instrumentSans(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: ui.ink,
+                    letterSpacing: -0.3,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: ui.sheet,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: ui.border, width: 1),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: _AppearanceOptionCard(
+                          label: 'Sistem',
+                          mode: _ThemeOption.system,
+                          selected: _selectedTheme == _ThemeOption.system,
+                          ui: ui,
+                          onTap: () => _selectTheme(_ThemeOption.system),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _AppearanceOptionCard(
+                          label: 'Terang',
+                          mode: _ThemeOption.light,
+                          selected: _selectedTheme == _ThemeOption.light,
+                          ui: ui,
+                          onTap: () => _selectTheme(_ThemeOption.light),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _AppearanceOptionCard(
+                          label: 'Gelap',
+                          mode: _ThemeOption.dark,
+                          selected: _selectedTheme == _ThemeOption.dark,
+                          ui: ui,
+                          onTap: () => _selectTheme(_ThemeOption.dark),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 26),
+
+                // SECTION 2: PENGINGAT
+                Text(
+                  'Pengingat',
+                  style: GoogleFonts.instrumentSans(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: ui.ink,
+                    letterSpacing: -0.3,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  decoration: BoxDecoration(
+                    color: ui.sheet,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: ui.border, width: 1),
+                  ),
+                  child: Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.notifications_none_rounded,
+                              size: 20,
+                              color: ui.ink,
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Text(
+                                'Pengingat menabung',
+                                style: GoogleFonts.instrumentSans(
+                                  fontSize: 14.5,
+                                  fontWeight: FontWeight.w500,
+                                  color: ui.ink,
+                                ),
+                              ),
+                            ),
+                            Switch.adaptive(
+                              value: _reminderEnabled,
+                              activeThumbColor: Colors.white,
+                              activeTrackColor: ui.gain,
+                              onChanged: (val) async {
+                                await SettingsController.saveReminder(
+                                  enabled: val,
+                                  time: _reminderTime,
+                                );
+                                await _syncNotificationSchedule(
+                                  enabled: val,
+                                  time: _reminderTime,
+                                );
+                                if (!mounted) return;
+                                setState(() => _reminderEnabled = val);
+                                if (val) {
+                                  _showSnack(
+                                      'Pengingat menabung aktif pukul $_reminderTime');
+                                }
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                      Divider(height: 1, thickness: 1, color: ui.divider),
+                      InkWell(
+                        borderRadius: const BorderRadius.vertical(
+                          bottom: Radius.circular(16),
+                        ),
+                        onTap: _pickReminderTime,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 15),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.schedule_rounded,
+                                size: 20,
+                                color: ui.ink,
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Text(
+                                  'Waktu pengingat',
+                                  style: GoogleFonts.instrumentSans(
+                                    fontSize: 14.5,
+                                    fontWeight: FontWeight.w500,
+                                    color: ui.ink,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                _reminderEnabled ? _reminderTime : 'Nonaktif',
+                                style: GoogleFonts.jetBrainsMono(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                  color:
+                                      _reminderEnabled ? ui.gain : ui.muted,
+                                  fontFeatures: const [
+                                    FontFeature.tabularFigures()
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Icon(
+                                Icons.chevron_right_rounded,
+                                size: 18,
+                                color: ui.muted,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 26),
+
+                // SECTION 3: DATA & LAPORAN
+                Text(
+                  'Data & Laporan',
+                  style: GoogleFonts.instrumentSans(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: ui.ink,
+                    letterSpacing: -0.3,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  decoration: BoxDecoration(
+                    color: ui.sheet,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: ui.border, width: 1),
+                  ),
+                  child: Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 15),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.shield_outlined,
+                              size: 20,
+                              color: ui.gain,
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Text(
+                                'Penyimpanan lokal',
+                                style: GoogleFonts.instrumentSans(
+                                  fontSize: 14.5,
+                                  fontWeight: FontWeight.w500,
+                                  color: ui.ink,
+                                ),
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: ui.gainTint,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                '$txCount tx • $goalCount target',
+                                style: GoogleFonts.jetBrainsMono(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: ui.gain,
+                                  fontFeatures: const [
+                                    FontFeature.tabularFigures()
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Divider(height: 1, thickness: 1, color: ui.divider),
+                      InkWell(
+                        onTap: _isProcessing ? null : _handleExportPdf,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 15),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.picture_as_pdf_outlined,
+                                size: 20,
+                                color: ui.ink,
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Text(
+                                  'Export laporan PDF',
+                                  style: GoogleFonts.instrumentSans(
+                                    fontSize: 14.5,
+                                    fontWeight: FontWeight.w500,
+                                    color: ui.ink,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                'PDF',
+                                style: GoogleFonts.jetBrainsMono(
+                                  fontSize: 12.5,
+                                  color: ui.muted,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Icon(
+                                Icons.chevron_right_rounded,
+                                size: 18,
+                                color: ui.muted,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Divider(height: 1, thickness: 1, color: ui.divider),
+                      InkWell(
+                        onTap: _isProcessing ? null : _handleBackup,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 15),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.cloud_upload_outlined,
+                                size: 20,
+                                color: ui.ink,
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Text(
+                                  'Backup data',
+                                  style: GoogleFonts.instrumentSans(
+                                    fontSize: 14.5,
+                                    fontWeight: FontWeight.w500,
+                                    color: ui.ink,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                '.json',
+                                style: GoogleFonts.jetBrainsMono(
+                                  fontSize: 12.5,
+                                  color: ui.muted,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Icon(
+                                Icons.chevron_right_rounded,
+                                size: 18,
+                                color: ui.muted,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Divider(height: 1, thickness: 1, color: ui.divider),
+                      InkWell(
+                        borderRadius: const BorderRadius.vertical(
+                          bottom: Radius.circular(16),
+                        ),
+                        onTap: _isProcessing ? null : _handleRestore,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 15),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.restore_rounded,
+                                size: 20,
+                                color: ui.ink,
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Text(
+                                  'Pulihkan data',
+                                  style: GoogleFonts.instrumentSans(
+                                    fontSize: 14.5,
+                                    fontWeight: FontWeight.w500,
+                                    color: ui.ink,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                'Import',
+                                style: GoogleFonts.jetBrainsMono(
+                                  fontSize: 12.5,
+                                  color: ui.muted,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Icon(
+                                Icons.chevron_right_rounded,
+                                size: 18,
+                                color: ui.muted,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Center(
+                  child: Text(
+                    'Semua data diproses secara lokal di perangkat ini.',
+                    style: GoogleFonts.instrumentSans(
+                      fontSize: 12,
+                      color: ui.subtle,
+                    ),
+                  ),
+                ),
+              ],
             );
           },
         ),
@@ -770,18 +798,18 @@ class _AppearanceOptionCard extends StatelessWidget {
   Widget _buildPreview() {
     switch (mode) {
       case _ThemeOption.light:
-        return _MiniPhoneMockup(
-          frameBg: const Color(0xFFF7F6F3),
-          cardBg: const Color(0xFFFFFFFF),
-          barColor: const Color(0xFFE4E2DC),
-          islandColor: const Color(0xFF17171A),
+        return const _MiniPhoneMockup(
+          frameBg: Color(0xFFF7F6F3),
+          cardBg: Color(0xFFFFFFFF),
+          barColor: Color(0xFFE4E2DC),
+          islandColor: Color(0xFF17171A),
         );
       case _ThemeOption.dark:
-        return _MiniPhoneMockup(
-          frameBg: const Color(0xFF1E1E22),
-          cardBg: const Color(0xFF141417),
-          barColor: const Color(0xFF2A2A30),
-          islandColor: const Color(0xFF0B0B0D),
+        return const _MiniPhoneMockup(
+          frameBg: Color(0xFF1E1E22),
+          cardBg: Color(0xFF141417),
+          barColor: Color(0xFF2A2A30),
+          islandColor: Color(0xFF0B0B0D),
         );
       case _ThemeOption.system:
         return LayoutBuilder(
@@ -789,7 +817,6 @@ class _AppearanceOptionCard extends StatelessWidget {
             final halfWidth = constraints.maxWidth / 2;
             return Stack(
               children: [
-                // Sisi kiri: Light
                 Positioned(
                   left: 0,
                   top: 0,
@@ -809,7 +836,6 @@ class _AppearanceOptionCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                // Sisi kanan: Dark
                 Positioned(
                   right: 0,
                   top: 0,
@@ -863,7 +889,6 @@ class _MiniPhoneMockup extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
         child: Column(
           children: [
-            // Dynamic island kecil
             Container(
               width: 16,
               height: 4,

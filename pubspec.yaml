@@ -17,16 +17,26 @@ dependencies:
   google_fonts: ^6.2.1
   intl: ^0.19.0
   image_picker: ^1.0.7
-  pdf: ^3.11.1            # <-- baru (untuk generate laporan PDF)
-  printing: ^5.13.4       # <-- baru (untuk simpan/cetak PDF & download JSON)
-  file_picker: ^8.1.4 
+  pdf: ^3.11.1
+  printing: ^5.13.4
   flutter_local_notifications: ^18.0.1
-  timezone: ^0.9.4    # <-- baru (untuk pilih file JSON saat restore)
+  file_picker: ^10.1.2
+  timezone: ^0.9.4
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: false
+  image_path: "assets/logo.png"
+  adaptive_icon_background: "#17171A"
+  adaptive_icon_foreground: "assets/logo.png"
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/logo.png
