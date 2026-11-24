@@ -4,22 +4,36 @@ import 'package:timezone/timezone.dart' as tz;
 
 class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
+  static bool _initialized = false;
 
   static Future<void> init() async {
+    if (_initialized) return;
+
     tz.initializeTimeZones();
     tz.setLocalLocation(tz.getLocation('Asia/Jakarta'));
 
-    const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+    // Sesuaikan dengan AndroidManifest.xml (@mipmap/launcher_icon)
+    const androidInit = AndroidInitializationSettings('@mipmap/launcher_icon');
     const initSettings = InitializationSettings(android: androidInit);
 
     await _plugin.initialize(initSettings);
+    await requestPermissions();
 
+    _initialized = true;
+  }
+
+  /// Minta izin notifikasi (Android 13+) & exact alarm (Android 12+)
+  static Future<void> requestPermissions() async {
     final androidPlugin = _plugin.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
 
-    // Minta izin notifikasi (Android 13+) & izin exact alarm (Android 12+)
     await androidPlugin?.requestNotificationsPermission();
-    await androidPlugin?.requestExactAlarmsPermission();
+
+    final canExact =
+        await androidPlugin?.canScheduleExactNotifications() ?? false;
+    if (!canExact) {
+      await androidPlugin?.requestExactAlarmsPermission();
+    }
   }
 
   /// Menampilkan notifikasi langsung ke layar HP
@@ -28,6 +42,8 @@ class NotificationService {
     required String title,
     required String body,
   }) async {
+    if (!_initialized) await init();
+
     const androidDetails = AndroidNotificationDetails(
       'sakuin_channel',
       'Pengingat Tabungan',
@@ -49,6 +65,12 @@ class NotificationService {
     required int hour,
     required int minute,
   }) async {
+    if (!_initialized) await init();
+    await requestPermissions();
+
+    // Hapus jadwal lama sebelum pasang yang baru
+    await _plugin.cancel(100);
+
     final now = tz.TZDateTime.now(tz.local);
     var scheduled =
         tz.TZDateTime(tz.local, now.year, now.month, now.day, hour, minute);
@@ -64,13 +86,20 @@ class NotificationService {
       priority: Priority.high,
     );
 
+    final androidPlugin = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    final hasExactAlarm =
+        await androidPlugin?.canScheduleExactNotifications() ?? false;
+
     await _plugin.zonedSchedule(
       100,
       'Waktunya menabung hari ini',
       'Catat pemasukanmu sekarang supaya streak menabung tidak terputus.',
       scheduled,
       const NotificationDetails(android: androidDetails),
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+      androidScheduleMode: hasExactAlarm
+          ? AndroidScheduleMode.exactAllowWhileIdle
+          : AndroidScheduleMode.inexactAllowWhileIdle,
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
       matchDateTimeComponents: DateTimeComponents.time,

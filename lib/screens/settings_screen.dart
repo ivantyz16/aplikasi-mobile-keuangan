@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
-import '../models/saving_goal_model.dart';
+import '../main.dart';
 import '../models/transaction_model.dart';
 import '../services/export_backup_service.dart';
 import '../services/hive_service.dart';
@@ -54,8 +54,6 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  bool _isDark = false;
-  bool _useSystemTheme = false;
   bool _reminderEnabled = false;
   String _reminderTime = '20:00';
   bool _isProcessing = false;
@@ -68,7 +66,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _loadInitialSettings() {
     try {
-      _isDark = SettingsController.isDark;
       _reminderEnabled = SettingsController.reminderEnabled;
       _reminderTime = SettingsController.reminderTime;
     } catch (e) {
@@ -77,31 +74,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   _ThemeOption get _selectedTheme {
-    if (_useSystemTheme) return _ThemeOption.system;
-    return _isDark ? _ThemeOption.dark : _ThemeOption.light;
+    final mode = appThemeNotifier.value;
+    if (mode == ThemeMode.system) return _ThemeOption.system;
+    if (mode == ThemeMode.dark) return _ThemeOption.dark;
+    return _ThemeOption.light;
   }
 
   Future<void> _selectTheme(_ThemeOption option) async {
+    final bool targetDark;
+    final ThemeMode targetMode;
+
     if (option == _ThemeOption.system) {
-      final platformDark =
+      targetDark =
           WidgetsBinding.instance.platformDispatcher.platformBrightness ==
               Brightness.dark;
-      await SettingsController.toggleDarkMode(platformDark);
-      if (!mounted) return;
-      setState(() {
-        _useSystemTheme = true;
-        _isDark = platformDark;
-      });
-      return;
+      targetMode = ThemeMode.system;
+    } else if (option == _ThemeOption.dark) {
+      targetDark = true;
+      targetMode = ThemeMode.dark;
+    } else {
+      targetDark = false;
+      targetMode = ThemeMode.light;
     }
 
-    final dark = option == _ThemeOption.dark;
-    await SettingsController.toggleDarkMode(dark);
-    if (!mounted) return;
-    setState(() {
-      _useSystemTheme = false;
-      _isDark = dark;
-    });
+    // 1. Ubah tema UI secara langsung terlebih dahulu
+    appThemeNotifier.value = targetMode;
+    if (mounted) setState(() {});
+
+    // 2. Simpan preferensi ke penyimpanan lokal secara aman
+    try {
+      await SettingsController.toggleDarkMode(targetDark);
+    } catch (e) {
+      debugPrint('Save dark mode error: $e');
+    }
   }
 
   Future<void> _syncNotificationSchedule({
@@ -128,7 +133,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _showSnack(String message, {bool isError = false}) {
     if (!mounted) return;
-    final ui = _Ui(_isDark);
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final ui = _Ui(isDark);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         elevation: 0,
@@ -205,7 +211,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _handleRestore() async {
-    final ui = _Ui(_isDark);
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final ui = _Ui(isDark);
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -274,11 +281,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final bool currentDark = Theme.of(context).brightness == Brightness.dark;
-    if (_isDark != currentDark) {
-      _isDark = currentDark;
-    }
-    final ui = _Ui(_isDark);
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final ui = _Ui(isDark);
 
     return Scaffold(
       backgroundColor: ui.canvas,

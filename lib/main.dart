@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:hive_flutter/hive_flutter.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'screens/dashboard_screen.dart';
@@ -11,13 +10,22 @@ import 'screens/splash_screen.dart';
 import 'screens/statistics_screen.dart';
 import 'screens/transactions_screen.dart';
 import 'services/hive_service.dart';
+import 'services/notification_service.dart';
 import 'theme/app_theme.dart';
 import 'widgets/notched_nav_bar.dart';
+
+/// Notifier global agar pergantian tema di Setelan langsung mengubah seluruh app
+final ValueNotifier<ThemeMode> appThemeNotifier =
+    ValueNotifier<ThemeMode>(ThemeMode.light);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('id_ID', null);
   await HiveService.init();
+  await NotificationService.init();
+
+  appThemeNotifier.value =
+      SettingsController.isDark ? ThemeMode.dark : ThemeMode.light;
 
   runApp(const SakuinApp());
 }
@@ -27,10 +35,13 @@ class SakuinApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder(
-      valueListenable: HiveService.box.listenable(),
-      builder: (context, _, __) {
-        final isDark = SettingsController.isDark;
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: appThemeNotifier,
+      builder: (context, mode, _) {
+        final bool isDark = mode == ThemeMode.dark ||
+            (mode == ThemeMode.system &&
+                WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+                    Brightness.dark);
 
         SystemChrome.setSystemUIOverlayStyle(
           SystemUiOverlayStyle(
@@ -70,7 +81,7 @@ class SakuinApp extends StatelessWidget {
               surface: Color(0xFF1A1A1E),
             ),
           ),
-          themeMode: isDark ? ThemeMode.dark : ThemeMode.light,
+          themeMode: mode,
           home: const SplashScreen(
             nextScreen: MainShell(),
           ),
